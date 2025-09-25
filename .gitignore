@@ -1,0 +1,41 @@
+## Build artifacts
+bin/
+obj/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+## Logs
+*.log
+logs/
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## Dotnet tooling
+*.nupkg
+*.snupkg
+artifacts/
+TestResults/
+.nuget/
+packages/
+
+## Coverage
+coverage/
+*.coverage
+*.coveragexml
+
+## BenchmarkDotNet
+BenchmarkDotNet.Artifacts/
+
+## Docker
+**/.docker-compose.override.yml
+
+## k6 output
+k6-results/
