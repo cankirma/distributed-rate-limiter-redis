@@ -10,7 +10,7 @@ using RateLimiter.Infrastructure.Persistence;
 
 namespace RateLimiter.Infrastructure.Services;
 
-internal interface IRateLimitPolicyCache : IDisposable
+public interface IRateLimitPolicyCache : IDisposable
 {
     ValueTask InitializeAsync(CancellationToken cancellationToken = default);
 
@@ -42,10 +42,25 @@ internal sealed class RateLimitPolicyCache : IRateLimitPolicyCache
 
     public async ValueTask InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (_options.WarmPoliciesOnStartup)
+        var eagerLoad = _options.WarmPoliciesOnStartup;
+
+        await RefreshAsync(cancellationToken, eagerLoad).ConfigureAwait(false);
+
+        if (!eagerLoad)
         {
-            await RefreshAsync(cancellationToken).ConfigureAwait(false);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await RefreshAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Background policy refresh failed.");
+                }
+            });
         }
+
         ConfigureTimer();
     }
 
@@ -62,7 +77,7 @@ internal sealed class RateLimitPolicyCache : IRateLimitPolicyCache
     public IReadOnlyDictionary<string, RateLimitPolicy> SnapshotPolicies()
         => Volatile.Read(ref _policies);
 
-    private async Task RefreshAsync(CancellationToken cancellationToken)
+    private async Task RefreshAsync(CancellationToken cancellationToken, bool includeRepository = true)
     {
         if (!await _refreshLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
@@ -71,15 +86,45 @@ internal sealed class RateLimitPolicyCache : IRateLimitPolicyCache
 
         try
         {
-            var policies = await _repository.GetPoliciesAsync(cancellationToken).ConfigureAwait(false);
             var map = new Dictionary<string, RateLimitPolicy>(StringComparer.OrdinalIgnoreCase);
-            foreach (var policy in policies)
+            var options = _options;
+            var configuredCount = 0;
+            var persistedCount = 0;
+
+            if (options.Policies.Count > 0)
             {
-                map[policy.PolicyName] = policy;
+                foreach (var configuration in options.Policies)
+                {
+                    try
+                    {
+                        var configuredPolicy = configuration.ToPolicy();
+                        map[configuredPolicy.PolicyName] = configuredPolicy;
+                        configuredCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        var policyName = string.IsNullOrWhiteSpace(configuration.PolicyName) ? "<unknown>" : configuration.PolicyName;
+                        _logger.LogError(ex, "Failed to apply configured rate limit policy {PolicyName}.", policyName);
+                    }
+                }
+            }
+
+            if (includeRepository)
+            {
+                var policies = await _repository.GetPoliciesAsync(cancellationToken).ConfigureAwait(false);
+                persistedCount = policies.Count;
+                foreach (var policy in policies)
+                {
+                    map[policy.PolicyName] = policy;
+                }
             }
 
             Volatile.Write(ref _policies, map);
-            _logger.LogInformation("Loaded {PolicyCount} rate limit policies from persistence.", map.Count);
+            _logger.LogInformation(
+                "Loaded {PolicyCount} rate limit policies (configured: {ConfiguredCount}, persisted: {PersistedCount}).",
+                map.Count,
+                configuredCount,
+                includeRepository ? persistedCount : 0);
         }
         catch (Exception ex)
         {
@@ -112,6 +157,7 @@ internal sealed class RateLimitPolicyCache : IRateLimitPolicyCache
     {
         Interlocked.Exchange(ref _options, options);
         ConfigureTimer();
+        _ = Task.Run(async () => await RefreshAsync(CancellationToken.None).ConfigureAwait(false));
     }
 
     public void Dispose()

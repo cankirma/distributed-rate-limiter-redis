@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using RateLimiter.Core.Abstractions;
 
 namespace RateLimiter.Infrastructure.Configuration;
 
@@ -12,6 +14,11 @@ public sealed class RateLimiterInfrastructureOptions
     public RedisOptions Redis { get; init; } = new();
 
     public PostgresOptions Postgres { get; init; } = new();
+
+    /// <summary>
+    /// Optional statically configured policies that are merged with persisted definitions.
+    /// </summary>
+    public IReadOnlyList<RateLimitPolicyConfiguration> Policies { get; init; } = Array.Empty<RateLimitPolicyConfiguration>();
 
     /// <summary>
     /// Determines how frequently policies are refreshed from Postgres.
@@ -40,9 +47,65 @@ public sealed class RateLimiterInfrastructureOptions
         Postgres.Validate();
         SlidingWindow.Validate();
 
+        foreach (var policy in Policies)
+        {
+            policy.ToPolicy();
+        }
+
         if (PolicyReloadInterval <= TimeSpan.Zero)
         {
             throw new ValidationException("Policy reload interval must be positive.");
+        }
+    }
+
+    public sealed class RateLimitPolicyConfiguration
+    {
+        [Required]
+        public string PolicyName { get; init; } = string.Empty;
+
+        public RateLimitAlgorithmType Algorithm { get; init; } = RateLimitAlgorithmType.TokenBucket;
+
+        [Range(1, int.MaxValue)]
+        public int PermitLimit { get; init; } = 100;
+
+        [Range(typeof(TimeSpan), "00:00:01", "1.00:00:00")]
+        public TimeSpan Window { get; init; } = TimeSpan.FromMinutes(1);
+
+        [Range(0, int.MaxValue)]
+        public int BurstLimit { get; init; }
+
+        [Range(typeof(TimeSpan), "00:00:01", "00:10:00")]
+        public TimeSpan Precision { get; init; } = TimeSpan.FromMilliseconds(100);
+
+        public TimeSpan? Cooldown { get; init; }
+
+        [Range(1, int.MaxValue)]
+        public int TokensPerRequest { get; init; } = 1;
+
+        public bool SlidingWindowMetricsEnabled { get; init; } = true;
+
+        public RateLimitPolicy ToPolicy()
+        {
+            if (string.IsNullOrWhiteSpace(PolicyName))
+            {
+                throw new ValidationException("Policy name is required.");
+            }
+
+            var policy = new RateLimitPolicy
+            {
+                PolicyName = PolicyName,
+                Algorithm = Algorithm,
+                PermitLimit = PermitLimit,
+                Window = Window,
+                BurstLimit = BurstLimit,
+                Precision = Precision,
+                Cooldown = Cooldown,
+                TokensPerRequest = (uint)TokensPerRequest,
+                SlidingWindowMetricsEnabled = SlidingWindowMetricsEnabled
+            };
+
+            policy.Validate();
+            return policy;
         }
     }
 

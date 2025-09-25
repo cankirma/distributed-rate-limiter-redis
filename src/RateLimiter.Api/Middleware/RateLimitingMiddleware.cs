@@ -5,7 +5,7 @@ using RateLimiter.Api.Services;
 
 namespace RateLimiter.Api.Middleware;
 
-public sealed class RateLimitingMiddleware
+internal sealed class RateLimitingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly IRateLimitEvaluationService _evaluationService;

@@ -6,6 +6,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Prometheus;
+using RateLimiter.Api.Configuration;
 using RateLimiter.Api.Extensions;
 using RateLimiter.Api.Identity;
 using RateLimiter.Api.Middleware;
@@ -31,6 +32,22 @@ builder.Services.AddProblemDetails();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddOptions<RateLimiterIdentityOptions>()
+	.Bind(builder.Configuration.GetSection(RateLimiterIdentityOptions.SectionName))
+	.Validate(options =>
+	{
+		try
+		{
+			options.Validate();
+			return true;
+		}
+		catch
+		{
+			return false;
+		}
+	}, "Invalid rate limiter identity options.")
+	.ValidateOnStart();
+
 builder.Services.AddRateLimiterInfrastructure(builder.Configuration);
 
 builder.Services.AddSingleton<IRateLimitIdentityExtractor, DefaultRateLimitIdentityExtractor>();
@@ -48,7 +65,7 @@ builder.Services.AddOpenTelemetry()
 	{
 		tracing.AddAspNetCoreInstrumentation();
 		tracing.AddHttpClientInstrumentation();
-		tracing.AddConsoleExporter();
+		tracing.AddOtlpExporter();
 	});
 
 builder.Services.AddHealthChecks();
@@ -84,12 +101,16 @@ api.MapGet("/search", (string query) =>
 	var items = Enumerable.Range(1, 5)
 		.Select(i => new SearchResult($"result-{i}", $"Match {i} for '{query}'"));
 	return Results.Ok(new SearchResponse(query, items));
-}).RequireRateLimitPolicy("search", RateLimitExecutionMode.Middleware);
+}).RequireRateLimitPolicy("search", RateLimitExecutionMode.Middleware, identityHint: "tenant");
 
 api.MapPost("/reports/{id:int}/generate", (int id) =>
 {
 	return Results.Accepted($"/reports/{id}", new { reportId = id, status = "queued" });
-}).RequireRateLimitPolicy("reports", RateLimitExecutionMode.Middleware, tokenSelector: static (_, _) => ValueTask.FromResult(5u));
+}).RequireRateLimitPolicy(
+	"reports",
+	RateLimitExecutionMode.Middleware,
+	tokenSelector: static (_, _) => ValueTask.FromResult(5u),
+	identityHint: "tenant|api-key");
 
 app.Run();
 
